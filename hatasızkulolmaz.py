@@ -1,0 +1,61 @@
+def run_python_code(py_code: str, filename: str = "<reiscode>") -> None:
+    try:
+        compiled = compile(py_code, filename, "exec")
+        exec_globals = {}
+        exec(compiled, exec_globals, exec_globals)
+
+    except SyntaxError as exc:
+        error_code, title = get_error_info(exc)
+        print("")
+        print(f"💥 {title}")
+        print("Kod biraz fazla özgür takılmış olabilir.")
+        print("")
+        print(f"Hata Kodu   : {error_code}")
+        print(f"Dosya       : {exc.filename}")
+        print(f"Satır       : {exc.lineno}")
+        print(f"Problemli   : {exc.text.strip() if exc.text else 'yok gibi'}")
+        print(f"Açıklama    : {exc.msg}")
+        pretty_traceback(exc, error_code)
+        print("")
+        print("Reis işin içinden çıkamadıysa bir bildiği vardır.")
+        print(HEADER_LINE)
+
+    except NameError as exc:
+        error_code, title = get_error_info(exc)
+        print("")
+        print(f"🤦 {title}")
+        print("Bir şeyi çağırıyorsun ama tanıtmamışsın reis. Önce tanım, sonra çağrı.")
+        print("")
+        print(f"Hata Kodu   : {error_code}")
+        print(f"Mesaj       : {exc}")
+        pretty_traceback(exc, error_code)
+        print("")
+        print("Reis işin içinden çıkamadıysa bir bildiği vardır.")
+        print(HEADER_LINE)
+
+    except TypeError as exc:
+        error_code, title = get_error_info(exc)
+        print("")
+        print(f"🧩 {title}")
+        print("Türler birbirine küsmüş olabilir reis. Sayıyı yazıyla karıştırma mesela.")
+        print("")
+        print(f"Hata Kodu   : {error_code}")
+        print(f"Mesaj       : {exc}")
+        pretty_traceback(exc, error_code)
+        print("")
+        print("Reis işin içinden çıkamadıysa bir bildiği vardır.")
+        print(HEADER_LINE)
+
+    except Exception as exc:
+        error_code, title = get_error_info(exc)
+        print("")
+        print(f"🔥 ReisCode Panik Merkezi: {title}")
+        print("Abi nolur dikkat et ya, büyük patlama oluştu.")
+        print("")
+        print(f"Hata Kodu   : {error_code}")
+        print(f"Hata türü   : {type(exc).__name__}")
+        print(f"Mesaj       : {exc}")
+        pretty_traceback(exc, error_code)
+        print("")
+        print("Reis işin içinden çıkamadıysa bir bildiği vardır.")
+        print(HEADER_LINE)
