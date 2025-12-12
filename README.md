@@ -48,7 +48,7 @@ REIS_FUN_KEYWORDS = {
     "rastgele_bi_tane": "random.choice",
     "şansını_dene": "random.choice",
 
-    "şu_an_kaç": "datetime.now",
+    "şu_an_kaç": "datetime.now",,
     "saat_kac_len": "datetime.now",
 
     "uyu_gari": "time.sleep",
