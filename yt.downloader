@@ -1,0 +1,1426 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from pathlib import Path
+import threading
+import yt_dlp
+import yt_dlp.utils as yutils
+import json
+import os
+import sys
+import subprocess
+import ctypes
+from urllib.request import urlopen
+from io import BytesIO
+import webbrowser  # Önizleme ve oynatma için
+
+# Thumbnail için Pillow (PIL) kontrolü
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+playlist_cancel = {"flag": False}
+LOG_CALLBACK = None  # Log ekranına yazmak için global geri çağırım
+
+DEFAULT_DIR = Path.home() / "Downloads" / "YouTube_Sarkilar"
+DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
+
+CONFIG_PATH = Path.home() / ".youtube_sarkilar_config.json"
+
+
+# -------------------------------------------------------------------
+# AYAR OKU / YAZ
+# -------------------------------------------------------------------
+def ayarlari_kaydet(format_degeri, kalite_degeri, klasor_degeri, tema_degeri):
+    data = {
+        "format": format_degeri,
+        "kalite": kalite_degeri,
+        "klasor": klasor_degeri,
+        "tema": tema_degeri,
+    }
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        msg = f"Ayar kaydetme hatası: {e}"
+        print(msg)
+        if LOG_CALLBACK:
+            LOG_CALLBACK(msg)
+
+
+def ayarlari_yukle():
+    if not CONFIG_PATH.exists():
+        return None
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        msg = f"Ayar okuma hatası: {e}"
+        print(msg)
+        if LOG_CALLBACK:
+            LOG_CALLBACK(msg)
+        return None
+
+
+def klasoru_ac(path_str):
+    path = Path(path_str)
+    if not path.exists():
+        messagebox.showwarning("Uyarı", "Klasör bulunamadı.")
+        if LOG_CALLBACK:
+            LOG_CALLBACK(f"Klasör bulunamadı: {path_str}")
+        return
+
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception as e:
+        messagebox.showerror("Hata", f"Klasör açılamadı:\n{e}")
+        if LOG_CALLBACK:
+            LOG_CALLBACK(f"Klasör açılamadı: {e}")
+
+
+# -------------------------------------------------------------------
+# TEMA SİSTEMİ
+# -------------------------------------------------------------------
+def enable_blur_effect(root):
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        from ctypes import windll, byref, sizeof, c_int, c_void_p
+
+        hwnd = windll.user32.GetParent(root.winfo_id())
+
+        class ACCENTPOLICY(ctypes.Structure):
+            _fields_ = [
+                ("AccentState", c_int),
+                ("AccentFlags", c_int),
+                ("GradientColor", c_int),
+                ("AnimationId", c_int),
+            ]
+
+        class WINCOMPATTRDATA(ctypes.Structure):
+            _fields_ = [
+                ("Attribute", c_int),
+                ("Data", c_void_p),
+                ("SizeOfData", c_int),
+            ]
+
+        accent = ACCENTPOLICY(3, 0, 0, 0)  # blur
+        data = WINCOMPATTRDATA(19, byref(accent), sizeof(accent))
+        windll.user32.SetWindowCompositionAttribute(hwnd, byref(data))
+    except Exception:
+        pass
+
+
+THEME_PRESETS = {
+    "Koyu Mavi": {
+        "bg": "#020617",
+        "frame_bg": "#020617",
+        "fg": "#e5e7eb",
+        "muted_fg": "#9ca3af",
+        "accent": "#3b82f6",
+        "accent_soft": "#1d4ed8",
+        "entry_bg": "#020617",
+        "control_bg": "#020617",
+        "border": "#1f2937",
+        "group_label_fg": "#93c5fd",
+        "pb_trough": "#020617",
+        "pb_bar": "#2563eb",
+    },
+    "Fluent Açık": {
+        "bg": "#f3f4f6",
+        "frame_bg": "#ffffff",
+        "fg": "#111827",
+        "muted_fg": "#6b7280",
+        "accent": "#2563eb",
+        "accent_soft": "#1d4ed8",
+        "entry_bg": "#f9fafb",
+        "control_bg": "#ffffff",
+        "border": "#e5e7eb",
+        "group_label_fg": "#111827",
+        "pb_trough": "#e5e7eb",
+        "pb_bar": "#2563eb",
+    },
+    "Neon Gece": {
+        "bg": "#020617",
+        "frame_bg": "#020617",
+        "fg": "#e5e7eb",
+        "muted_fg": "#9ca3af",
+        "accent": "#22d3ee",
+        "accent_soft": "#06b6d4",
+        "entry_bg": "#020617",
+        "control_bg": "#020617",
+        "border": "#111827",
+        "group_label_fg": "#38bdf8",
+        "pb_trough": "#020617",
+        "pb_bar": "#22c55e",
+    },
+    "Mor Gece": {
+        "bg": "#05001a",
+        "frame_bg": "#05001a",
+        "fg": "#f9f5ff",
+        "muted_fg": "#c4b5fd",
+        "accent": "#a855f7",
+        "accent_soft": "#7e22ce",
+        "entry_bg": "#0b0220",
+        "control_bg": "#0b0220",
+        "border": "#1e1b4b",
+        "group_label_fg": "#e879f9",
+        "pb_trough": "#0b0220",
+        "pb_bar": "#a855f7",
+    },
+    "Yeşil Gece": {
+        "bg": "#020817",
+        "frame_bg": "#020817",
+        "fg": "#e5fff5",
+        "muted_fg": "#6ee7b7",
+        "accent": "#22c55e",
+        "accent_soft": "#16a34a",
+        "entry_bg": "#021a11",
+        "control_bg": "#021a11",
+        "border": "#064e3b",
+        "group_label_fg": "#4ade80",
+        "pb_trough": "#021a11",
+        "pb_bar": "#22c55e",
+    },
+    "Gri Minimal": {
+        "bg": "#111827",
+        "frame_bg": "#111827",
+        "fg": "#e5e7eb",
+        "muted_fg": "#9ca3af",
+        "accent": "#6b7280",
+        "accent_soft": "#4b5563",
+        "entry_bg": "#020617",
+        "control_bg": "#020617",
+        "border": "#1f2937",
+        "group_label_fg": "#d1d5db",
+        "pb_trough": "#020617",
+        "pb_bar": "#6b7280",
+    },
+    "Turuncu Gün Batımı": {
+        "bg": "#111827",
+        "frame_bg": "#111827",
+        "fg": "#f9fafb",
+        "muted_fg": "#fed7aa",
+        "accent": "#fb923c",
+        "accent_soft": "#f97316",
+        "entry_bg": "#020617",
+        "control_bg": "#020617",
+        "border": "#1f2937",
+        "group_label_fg": "#fdba74",
+        "pb_trough": "#020617",
+        "pb_bar": "#fb923c",
+    },
+    "Kırmızı Gece": {
+        "bg": "#180003",
+        "frame_bg": "#180003",
+        "fg": "#fee2e2",
+        "muted_fg": "#fecaca",
+        "accent": "#ef4444",
+        "accent_soft": "#b91c1c",
+        "entry_bg": "#020617",
+        "control_bg": "#020617",
+        "border": "#4b0007",
+        "group_label_fg": "#fca5a5",
+        "pb_trough": "#020617",
+        "pb_bar": "#ef4444",
+    },
+    "Solar Açık": {
+        "bg": "#fdf6e3",
+        "frame_bg": "#fefcf5",
+        "fg": "#073642",
+        "muted_fg": "#657b83",
+        "accent": "#268bd2",
+        "accent_soft": "#1669aa",
+        "entry_bg": "#fdf6e3",
+        "control_bg": "#fefcf5",
+        "border": "#eee8d5",
+        "group_label_fg": "#586e75",
+        "pb_trough": "#eee8d5",
+        "pb_bar": "#268bd2",
+    },
+    "Pastel Mavi": {
+        "bg": "#e0f2fe",
+        "frame_bg": "#f0f9ff",
+        "fg": "#0f172a",
+        "muted_fg": "#64748b",
+        "accent": "#38bdf8",
+        "accent_soft": "#0ea5e9",
+        "entry_bg": "#e0f2fe",
+        "control_bg": "#f0f9ff",
+        "border": "#bae6fd",
+        "group_label_fg": "#0369a1",
+        "pb_trough": "#bae6fd",
+        "pb_bar": "#38bdf8",
+    },
+}
+
+
+def apply_theme(root, style, theme_name: str):
+    default_font = ("Segoe UI", 12)
+    preset = THEME_PRESETS.get(theme_name) or THEME_PRESETS["Koyu Mavi"]
+
+    root.configure(bg=preset["bg"])
+    root.tk_setPalette(background=preset["bg"], foreground=preset["fg"])
+
+    try:
+        style.theme_use("clam")
+    except Exception:
+        style.theme_use("default")
+
+    style.configure(
+        ".",
+        background=preset["bg"],
+        foreground=preset["fg"],
+        font=default_font,
+    )
+
+    style.configure("TFrame", background=preset["frame_bg"])
+    style.configure("TLabelframe", background=preset["frame_bg"], foreground=preset["fg"])
+    style.configure(
+        "TLabelframe.Label",
+        background=preset["frame_bg"],
+        foreground=preset["group_label_fg"],
+        font=("Segoe UI Semibold", 11),
+    )
+    style.configure("TLabel", background=preset["frame_bg"], foreground=preset["fg"])
+
+    style.configure(
+        "TEntry",
+        fieldbackground=preset["entry_bg"],
+        foreground=preset["fg"],
+        borderwidth=0,
+        relief="flat",
+    )
+
+    style.configure(
+        "TCombobox",
+        fieldbackground=preset["entry_bg"],
+        background=preset["control_bg"],
+        foreground=preset["fg"],
+        borderwidth=0,
+        relief="flat",
+    )
+    style.map(
+        "TCombobox",
+        fieldbackground=[("readonly", preset["entry_bg"]), ("disabled", preset["entry_bg"])],
+        foreground=[("readonly", preset["fg"]), ("disabled", preset["muted_fg"])],
+    )
+
+    style.configure(
+        "TButton",
+        background=preset["accent"],
+        foreground="#ffffff",
+        padding=(14, 6),
+        relief="flat",
+        borderwidth=0,
+    )
+    style.map(
+        "TButton",
+        background=[
+            ("disabled", "#9ca3af"),
+            ("pressed", preset["accent_soft"]),
+            ("active", preset["accent_soft"]),
+        ],
+        foreground=[("disabled", "#f9fafb"), ("pressed", "#ffffff"), ("active", "#ffffff")],
+    )
+
+    style.configure("TCheckbutton", background=preset["frame_bg"], foreground=preset["fg"])
+    style.configure("TRadiobutton", background=preset["frame_bg"], foreground=preset["fg"])
+
+    style.configure(
+        "Blue.Horizontal.TProgressbar",
+        troughcolor=preset["pb_trough"],
+        background=preset["pb_bar"],
+        bordercolor=preset["bg"],
+        lightcolor=preset["pb_bar"],
+        darkcolor=preset["pb_bar"],
+        thickness=10,
+    )
+
+    if theme_name == "Fluent Açık":
+        enable_blur_effect(root)
+
+
+# -------------------------------------------------------------------
+# İNDİRME
+# -------------------------------------------------------------------
+def indir_tek(
+    url,
+    sadece_ses,
+    kalite,
+    klasor,
+    playlist_mi,
+    durum_callback,
+    playlist_items=None,
+    toplam_sayi=None,
+    progress_callback=None,
+):
+    try:
+        klasor_path = Path(klasor)
+        klasor_path.mkdir(parents=True, exist_ok=True)
+
+        secim_sira = None
+        if playlist_mi and playlist_items and toplam_sayi:
+            try:
+                indices = [int(x) for x in str(playlist_items).split(",") if x.strip().isdigit()]
+                secim_sira = {idx: i + 1 for i, idx in enumerate(indices)}
+            except Exception:
+                secim_sira = None
+
+        if playlist_mi:
+            outtmpl = str(
+                klasor_path
+                / "playlist"
+                / "%(playlist_title)s"
+                / "%(uploader)s - %(title)s.%(ext)s"
+            )
+            ydl_opts = {
+                "outtmpl": outtmpl,
+                "overwrites": False,
+            }
+            if playlist_items:
+                ydl_opts["playlist_items"] = playlist_items
+        else:
+            outtmpl = str(klasor_path / "%(title)s.%(ext)s")
+            ydl_opts = {
+                "outtmpl": outtmpl,
+                "noplaylist": True,
+                "overwrites": False,
+            }
+
+        if sadece_ses:
+            ydl_opts.update(
+                {
+                    "format": "bestaudio/best",
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegExtractAudio",
+                            "preferredcodec": "mp3",
+                            "preferredquality": kalite,
+                        }
+                    ],
+                }
+            )
+        else:
+            height = "".join(ch for ch in kalite if ch.isdigit()) or "720"
+            ydl_opts.update(
+                {
+                    "format": f"bestvideo[height<={height}]+bestaudio/best[height<={height}]",
+                    "merge_output_format": "mp4",
+                }
+            )
+
+        common_headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Referer": url,
+        }
+        ydl_opts.update(
+            {
+                "geo_bypass": True,
+                "http_headers": common_headers,
+            }
+        )
+
+        if "tiktok.com" in url.lower():
+            ydl_opts["impersonate"] = "chrome"
+            tiktok_headers = {
+                "User-Agent": common_headers["User-Agent"],
+                "Referer": url,
+            }
+            exist = ydl_opts.get("http_headers") or {}
+            exist.update(tiktok_headers)
+            ydl_opts["http_headers"] = exist
+
+        def hook(d):
+            if playlist_mi and playlist_cancel["flag"]:
+                if durum_callback:
+                    durum_callback("İptal edildi.")
+                raise Exception("PLAYLIST_IPTAL")
+
+            status = d.get("status")
+            downloaded = d.get("downloaded_bytes") or 0
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            percent_str = d.get("_percent_str", "").strip()
+            orann = None
+            if downloaded and total:
+                try:
+                    orann = downloaded / total
+                except ZeroDivisionError:
+                    orann = None
+
+            if status == "downloading":
+                prefix = ""
+                if playlist_mi and toplam_sayi:
+                    info = d.get("info_dict") or {}
+                    p_idx = info.get("playlist_index")
+                    if p_idx is not None:
+                        if secim_sira:
+                            sira = secim_sira.get(p_idx)
+                            if sira is not None:
+                                prefix = f"{sira} / {toplam_sayi} → "
+                            else:
+                                prefix = f"{p_idx} / {toplam_sayi} → "
+                        else:
+                            prefix = f"{p_idx} / {toplam_sayi} → "
+
+                mesaj = (
+                    f"{prefix}İndiriliyor... {percent_str}"
+                    if percent_str
+                    else f"{prefix}İndiriliyor..."
+                )
+
+                if durum_callback:
+                    durum_callback(mesaj)
+                if progress_callback and orann is not None:
+                    progress_callback(orann, percent_str)
+
+            elif status == "finished":
+                if durum_callback:
+                    durum_callback("Dönüştürülüyor...")
+
+        ydl_opts["progress_hooks"] = [hook]
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        if not (playlist_mi and playlist_cancel["flag"]):
+            if durum_callback:
+                durum_callback("İndirme tamamlandı.")
+            if progress_callback:
+                progress_callback(1.0, "100%")
+
+    except Exception as e:
+        if str(e) == "PLAYLIST_IPTAL":
+            return
+
+        if isinstance(e, FileNotFoundError):
+            mesaj = "FFmpeg bulunamadı. Lütfen FFmpeg kurup sistem PATH değişkenine ekleyin."
+            if durum_callback:
+                durum_callback(mesaj)
+            if LOG_CALLBACK:
+                LOG_CALLBACK(mesaj)
+            return
+
+        if isinstance(e, yutils.DownloadError):
+            mesaj = f"İndirme hatası: {e}"
+            if durum_callback:
+                durum_callback(mesaj)
+            if LOG_CALLBACK:
+                LOG_CALLBACK(mesaj)
+            return
+
+        mesaj = f"Beklenmeyen hata: {e}"
+        if durum_callback:
+            durum_callback(mesaj)
+        if LOG_CALLBACK:
+            LOG_CALLBACK(mesaj)
+
+
+# -------------------------------------------------------------------
+# GUI
+# -------------------------------------------------------------------
+def gui_calistir():
+    root = tk.Tk()
+    root.title("YouTube / Playlist / TikTok İndirici")
+
+    root.minsize(1000, 700)
+    try:
+        root.state("zoomed")
+    except Exception:
+        root.attributes("-zoomed", True)
+    root.resizable(True, True)
+
+    try:
+        icon_path = Path(__file__).with_name("app.ico")
+        if icon_path.exists():
+            root.iconbitmap(str(icon_path))
+    except Exception:
+        pass
+
+    style = ttk.Style(root)
+
+    varsayilan_tema = "Koyu Mavi"
+    onceki = ayarlari_yukle()
+    if onceki and onceki.get("tema") in THEME_PRESETS:
+        varsayilan_tema = onceki["tema"]
+
+    apply_theme(root, style, varsayilan_tema)
+
+    ana_frame = ttk.Frame(root, padding=10)
+    ana_frame.pack(fill="both", expand=True)
+    ana_frame.columnconfigure(0, weight=1)
+    ana_frame.columnconfigure(1, weight=1)
+    ana_frame.rowconfigure(1, weight=1)
+
+    # ÜST BAR
+    ust_frame = ttk.Frame(ana_frame)
+    ust_frame.grid(row=0, column=0, columnspan=2, sticky="we")
+    ust_frame.columnconfigure(1, weight=1)
+
+    ttk.Label(ust_frame, text="Tema:").grid(row=0, column=5, padx=(20, 5), sticky="e")
+    tema_var = tk.StringVar(value=varsayilan_tema)
+    tema_combo = ttk.Combobox(
+        ust_frame,
+        textvariable=tema_var,
+        values=list(THEME_PRESETS.keys()),
+        state="readonly",
+        width=16,
+    )
+    tema_combo.grid(row=0, column=6, sticky="w")
+
+    def tema_degisti(*_):
+        apply_theme(root, style, tema_var.get())
+
+    tema_var.trace_add("write", tema_degisti)
+
+    format_var = tk.StringVar(value="mp3")
+    ttk.Label(ust_frame, text="Format:").grid(row=0, column=0, sticky="w")
+    rb_ses = ttk.Radiobutton(ust_frame, text="MP3", value="mp3", variable=format_var)
+    rb_vid = ttk.Radiobutton(ust_frame, text="Video", value="video", variable=format_var)
+    rb_ses.grid(row=0, column=1, sticky="w")
+    rb_vid.grid(row=0, column=2, sticky="w")
+
+    ttk.Label(ust_frame, text="Kalite:").grid(row=0, column=3, padx=(20, 5), sticky="e")
+    quality_var = tk.StringVar()
+    quality_combo = ttk.Combobox(ust_frame, textvariable=quality_var, state="readonly", width=10)
+    quality_combo.grid(row=0, column=4, sticky="w")
+
+    def kalite_listesini_guncelle():
+        if format_var.get() == "mp3":
+            quality_combo["values"] = ["128", "192", "256", "320"]
+            if quality_var.get() not in quality_combo["values"]:
+                quality_var.set("192")
+        else:
+            quality_combo["values"] = [
+                "144p",
+                "240p",
+                "360p",
+                "480p",
+                "720p",
+                "1080p",
+                "1440p",
+                "2160p",
+                "4320p",
+            ]
+            if quality_var.get() not in quality_combo["values"]:
+                quality_var.set("720p")
+
+    kalite_listesini_guncelle()
+
+    def format_degisti(*_):
+        kalite_listesini_guncelle()
+
+    format_var.trace_add("write", format_degisti)
+
+    ttk.Label(ust_frame, text="Kayıt klasörü:").grid(
+        row=1, column=0, sticky="w", pady=(10, 0)
+    )
+    klasor_var = tk.StringVar(value=str(DEFAULT_DIR))
+    klasor_entry = ttk.Entry(ust_frame, textvariable=klasor_var)
+    klasor_entry.grid(row=1, column=1, columnspan=4, sticky="we", pady=(10, 0))
+
+    def klasor_sec():
+        secilen = filedialog.askdirectory()
+        if secilen:
+            klasor_var.set(secilen)
+
+    ttk.Button(ust_frame, text="Klasör Seç", command=klasor_sec).grid(
+        row=1, column=5, padx=5, pady=(10, 0)
+    )
+    ttk.Button(
+        ust_frame,
+        text="Klasörü Aç",
+        command=lambda: klasoru_ac(klasor_var.get().strip()),
+    ).grid(row=1, column=6, padx=5, pady=(10, 0))
+
+    if onceki:
+        fmt = onceki.get("format")
+        if fmt in ("mp3", "video"):
+            format_var.set(fmt)
+        kal = onceki.get("kalite")
+        if kal:
+            quality_var.set(kal)
+        klas = onceki.get("klasor")
+        if klas:
+            klasor_var.set(klas)
+
+    # SOL TARAF (TEKİL LİNKLER)
+    sol_frame = ttk.Frame(ana_frame)
+    sol_frame.grid(row=1, column=0, rowspan=2, sticky="nsew", padx=(0, 5))
+    sol_frame.columnconfigure(0, weight=1)
+    sol_frame.rowconfigure(0, weight=1)
+
+    tekil_frame = ttk.LabelFrame(
+        sol_frame, text="Tekil Linkler (her satır ayrı indirme)", padding=5
+    )
+    tekil_frame.grid(row=0, column=0, sticky="nwe", pady=(10, 5))
+    tekil_frame.columnconfigure(1, weight=1)
+
+    MAX_LINK = 5
+    link_vars = []
+    link_progressbars = []
+    link_status_labels = []
+
+    for i in range(MAX_LINK):
+        ttk.Label(tekil_frame, text=f"Link {i+1}:").grid(
+            row=i, column=0, sticky="w", pady=2
+        )
+        var = tk.StringVar()
+        entry = ttk.Entry(tekil_frame, textvariable=var)
+        entry.grid(row=i, column=1, sticky="we", pady=2, padx=(0, 5))
+
+        pb = ttk.Progressbar(
+            tekil_frame,
+            mode="determinate",
+            style="Blue.Horizontal.TProgressbar",
+            maximum=100,
+            length=150,
+        )
+        pb.grid(row=i, column=2, sticky="we", pady=2, padx=(0, 5))
+
+        durum_lbl = ttk.Label(tekil_frame, text="", width=24, anchor="w")
+        durum_lbl.grid(row=i, column=3, sticky="w", pady=2)
+
+        link_vars.append(var)
+        link_progressbars.append(pb)
+        link_status_labels.append(durum_lbl)
+
+    genel_durum_lbl = ttk.Label(sol_frame, text="Hazır.")
+    genel_durum_lbl.grid(row=1, column=0, sticky="w", pady=(10, 5))
+
+    progress = ttk.Progressbar(
+        sol_frame,
+        mode="determinate",
+        style="Blue.Horizontal.TProgressbar",
+        maximum=100,
+    )
+    progress.grid(row=2, column=0, sticky="we", pady=(0, 5))
+
+    def panodan_yapistir_tekil():
+        try:
+            text = root.clipboard_get()
+        except tk.TclError:
+            text = ""
+        if not text:
+            return
+
+        for v in link_vars:
+            if not v.get().strip():
+                v.set(text.strip())
+                break
+        else:
+            link_vars[0].set(text.strip())
+
+    # Tüm tekil linkleri ve durumlarını temizleyen fonksiyon
+    def linkleri_temizle():
+        for i, v in enumerate(link_vars):
+            v.set("")
+            link_progressbars[i]["value"] = 0
+            link_status_labels[i].config(text="")
+        genel_durum_lbl.config(text="Tüm tekil linkler temizlendi.")
+
+    # Tekil butonlar için yan yana çerçeve
+    tekil_buton_cerceve = ttk.Frame(tekil_frame)
+    tekil_buton_cerceve.grid(
+        row=MAX_LINK, column=0, columnspan=4, sticky="e", pady=(8, 0)
+    )
+
+    btn_pano = ttk.Button(
+        tekil_buton_cerceve,
+        text="Panodan Yapıştır",
+        command=panodan_yapistir_tekil,
+    )
+    btn_pano.grid(row=0, column=0, padx=3)
+
+    btn_temizle = ttk.Button(
+        tekil_buton_cerceve,
+        text="Linkleri Temizle",
+        command=linkleri_temizle,
+    )
+    btn_temizle.grid(row=0, column=1, padx=3)
+
+    # -------------------------------------------------------------------
+    # Tekil indirme
+    # -------------------------------------------------------------------
+    def tekil_indir():
+        sadece_ses = format_var.get() == "mp3"
+        kalite = quality_var.get()
+        klasor = klasor_var.get().strip()
+
+        urls = []
+        for idx, var in enumerate(link_vars):
+            u = var.get().strip()
+            link_progressbars[idx]["value"] = 0
+            link_status_labels[idx].config(text="")
+            if u:
+                urls.append((idx, u))
+
+        if not urls:
+            messagebox.showwarning("Uyarı", "En az bir tekil link giriniz.")
+            return
+
+        ayarlari_kaydet(format_var.get(), kalite, klasor, tema_var.get())
+        genel_durum_lbl.config(text=f"{len(urls)} link için indirme başlatılıyor...")
+
+        def thread_isleri():
+            root.after(0, lambda: progress.config(value=0))
+            for idx, url in urls:
+
+                def durum_guncelle(mesaj, satir=idx):
+                    def _inner():
+                        link_status_labels[satir].config(text=mesaj)
+                    root.after(0, _inner)
+
+                def progress_guncelle(orann, percent_str, satir=idx):
+                    def _inner():
+                        link_progressbars[satir]["value"] = orann * 100
+                    root.after(0, _inner)
+
+                threading.Thread(
+                    target=indir_tek,
+                    args=(
+                        url,
+                        sadece_ses,
+                        kalite,
+                        klasor,
+                        False,
+                        durum_guncelle,
+                        None,
+                        None,
+                        progress_guncelle,
+                    ),
+                    daemon=True,
+                ).start()
+
+            root.after(
+                0,
+                lambda: genel_durum_lbl.config(
+                    text=f"{len(urls)} link için indirme süreci başlatıldı."
+                ),
+            )
+
+        threading.Thread(target=thread_isleri, daemon=True).start()
+
+    tekil_buton = ttk.Button(
+        tekil_buton_cerceve,
+        text="Tekil linkleri indir",
+        command=tekil_indir,
+    )
+    tekil_buton.grid(row=0, column=2, padx=3)
+
+    # SAĞ TARAF (PLAYLIST)
+    sag_frame = ttk.Frame(ana_frame)
+    sag_frame.grid(row=1, column=1, rowspan=2, sticky="nsew", padx=(5, 0))
+    sag_frame.columnconfigure(0, weight=1)
+
+    playlist_frame = ttk.LabelFrame(
+        sag_frame, text="Playlist indir (tik ile parça seçimi)", padding=5
+    )
+    playlist_frame.grid(row=0, column=0, sticky="we", pady=(10, 5))
+    playlist_frame.columnconfigure(1, weight=1)
+
+    ttk.Label(playlist_frame, text="Playlist URL:").grid(row=0, column=0, sticky="w")
+    playlist_var = tk.StringVar()
+    playlist_entry = ttk.Entry(playlist_frame, textvariable=playlist_var)
+    playlist_entry.grid(row=0, column=1, sticky="we", padx=(0, 5))
+
+    def panodan_yapistir_playlist():
+        try:
+            text = root.clipboard_get()
+        except tk.TclError:
+            text = ""
+        if text:
+            playlist_var.set(text.strip())
+
+    # >>> YENİ: Playlist temizleme (URL + durum + önizleme + thumbnail)
+    def playlist_temizle():
+        playlist_var.set("")
+        playlist_durum_lbl.config(text="")
+        pl_title_lbl.config(text="Başlık: -")
+        pl_channel_lbl.config(text="Kanal: -")
+        pl_extra_lbl.config(text="Parça sayısı / Toplam süre: -")
+        playlist_preview_image_label.config(image="", text="")
+        try:
+            playlist_preview_image_label.image = None
+        except Exception:
+            pass
+
+        if LOG_CALLBACK:
+            LOG_CALLBACK("Playlist alanı temizlendi.")
+
+    ttk.Button(
+        playlist_frame, text="Panodan Yapıştır", command=panodan_yapistir_playlist
+    ).grid(row=0, column=2, padx=5)
+
+    # >>> YENİ: Temizle butonu (Panodan Yapıştır'ın yanına)
+    ttk.Button(
+        playlist_frame, text="Temizle", command=playlist_temizle
+    ).grid(row=0, column=3, padx=5)
+
+    playlist_durum_lbl = ttk.Label(playlist_frame, text="", width=70, justify="left")
+    playlist_durum_lbl.grid(row=1, column=0, columnspan=4, sticky="w", pady=(5, 0))
+
+    playlist_preview_frame = ttk.LabelFrame(sag_frame, text="Playlist Önizleme", padding=5)
+    playlist_preview_frame.grid(row=1, column=0, sticky="we", pady=(5, 5))
+    playlist_preview_frame.columnconfigure(1, weight=1)
+
+    playlist_preview_image_label = tk.Label(playlist_preview_frame, bg=root["bg"])
+    playlist_preview_image_label.grid(row=0, column=0, rowspan=3, padx=(0, 10), pady=5)
+
+    pl_title_lbl = ttk.Label(playlist_preview_frame, text="Başlık: -")
+    pl_title_lbl.grid(row=0, column=1, sticky="w", pady=2)
+
+    pl_channel_lbl = ttk.Label(playlist_preview_frame, text="Kanal: -")
+    pl_channel_lbl.grid(row=1, column=1, sticky="w", pady=2)
+
+    pl_extra_lbl = ttk.Label(playlist_preview_frame, text="Parça sayısı / Toplam süre: -")
+    pl_extra_lbl.grid(row=2, column=1, sticky="w", pady=2)
+
+    # -------------------------------------------------------------------
+    # Log ekranı (en altta)
+    # -------------------------------------------------------------------
+    log_frame = ttk.LabelFrame(ana_frame, text="Log", padding=5)
+    log_frame.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(5, 0))
+    log_frame.columnconfigure(0, weight=1)
+    log_frame.rowconfigure(0, weight=1)
+
+    log_text = tk.Text(
+        log_frame,
+        height=6,
+        state="disabled",
+        wrap="none",
+        bg=root["bg"],
+        fg=style.lookup("TLabel", "foreground") or "#ffffff",
+    )
+    log_text.grid(row=0, column=0, sticky="nsew")
+    log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=log_text.yview)
+    log_scroll.grid(row=0, column=1, sticky="ns")
+    log_text.configure(yscrollcommand=log_scroll.set)
+
+    def log_yaz(metin: str):
+        log_text.configure(state="normal")
+        log_text.insert("end", metin + "\n")
+        log_text.see("end")
+        log_text.configure(state="disabled")
+
+    globals()["LOG_CALLBACK"] = log_yaz
+
+    # -------------------------------------------------------------------
+    # Playlist Önizleme
+    # -------------------------------------------------------------------
+    def playlist_on_preview():
+        url = playlist_var.get().strip()
+        if not url:
+            messagebox.showwarning("Uyarı", "Playlist önizleme için URL giriniz.")
+            return
+
+        def isleri():
+            try:
+                info_opts = {
+                    "extract_flat": True,
+                    "skip_download": True,
+                    "quiet": True,
+                }
+                with yt_dlp.YoutubeDL(info_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+
+                title = info.get("title") or "-"
+                uploader = info.get("uploader") or info.get("channel") or "-"
+                entries = info.get("entries") or []
+                count = len(entries)
+
+                total_dur = 0
+                for e in entries:
+                    try:
+                        d = e.get("duration")
+                        if d:
+                            total_dur += int(d)
+                    except Exception:
+                        pass
+
+                if total_dur > 0:
+                    h = total_dur // 3600
+                    m = (total_dur % 3600) // 60
+                    s = total_dur % 60
+                    if h:
+                        total_str = f"{h:d} sa {m:02d} dk {s:02d} sn"
+                    else:
+                        total_str = f"{m:d} dk {s:02d} sn"
+                else:
+                    total_str = "-"
+
+                img_tk = None
+                thumb_url = None
+                thumbs = info.get("thumbnails")
+                if isinstance(thumbs, list) and thumbs:
+                    try:
+                        best = max(thumbs, key=lambda t: t.get("width", 0) or 0)
+                        thumb_url = best.get("url")
+                    except Exception:
+                        thumb_url = thumbs[0].get("url")
+                if not thumb_url:
+                    thumb_url = info.get("thumbnail")
+
+                if thumb_url and PIL_AVAILABLE:
+                    try:
+                        with urlopen(thumb_url) as resp:
+                            data = resp.read()
+                        img = Image.open(BytesIO(data))
+                        img.thumbnail((260, 150))
+                        img_tk = ImageTk.PhotoImage(img)
+                    except Exception as e_img:
+                        img_tk = None
+                        if LOG_CALLBACK:
+                            LOG_CALLBACK(f"Önizleme görseli alınamadı: {e_img}")
+
+                def guncelle():
+                    pl_title_lbl.config(text=f"Başlık: {title}")
+                    pl_channel_lbl.config(text=f"Kanal: {uploader}")
+                    pl_extra_lbl.config(text=f"Parça sayısı / Toplam süre: {count} / {total_str}")
+                    if img_tk:
+                        playlist_preview_image_label.config(image=img_tk, text="")
+                        playlist_preview_image_label.image = img_tk
+                    else:
+                        playlist_preview_image_label.config(image="", text="Önizleme yok")
+                        try:
+                            playlist_preview_image_label.image = None
+                        except Exception:
+                            pass
+
+                root.after(0, guncelle)
+
+            except Exception as e:
+                if LOG_CALLBACK:
+                    LOG_CALLBACK(f"Playlist önizleme alınamadı: {e}")
+                root.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Hata", f"Playlist önizleme alınamadı:\n{e}"
+                    ),
+                )
+
+        threading.Thread(target=isleri, daemon=True).start()
+
+    ttk.Button(
+        playlist_preview_frame, text="Playlist Önizle", command=playlist_on_preview
+    ).grid(row=0, column=2, rowspan=3, padx=5)
+
+    # -------------------------------------------------------------------
+    # Playlist indirme
+    # -------------------------------------------------------------------
+    def playlist_indirme_baslat(
+        url,
+        sadece_ses,
+        kalite,
+        klasor,
+        playlist_items_str,
+        toplam_parca,
+        indirilecek_sayi,
+    ):
+        playlist_cancel["flag"] = False
+
+        if playlist_items_str:
+            playlist_durum_lbl.config(
+                text=f"{indirilecek_sayi} parça indiriliyor (toplam {toplam_parca} içinden)."
+            )
+        else:
+            playlist_durum_lbl.config(text=f"{toplam_parca} parça indiriliyor...")
+
+        genel_durum_lbl.config(text="Playlist indiriliyor...")
+        playlist_buton.config(state="disabled")
+        playlist_iptal_buton.config(state="normal")
+
+        def thread_isleri():
+            def init_bar():
+                progress["value"] = 0
+                progress["maximum"] = 100
+                progress.config(mode="determinate")
+
+            root.after(0, init_bar)
+
+            def durum_guncelle(mesaj):
+                def _inner():
+                    playlist_durum_lbl.config(text=mesaj)
+                root.after(0, _inner)
+
+            def progress_guncelle(orann, percent_str):
+                def _inner():
+                    progress["value"] = orann * 100
+                root.after(0, _inner)
+
+            indir_tek(
+                url,
+                sadece_ses,
+                kalite,
+                klasor,
+                True,
+                durum_guncelle,
+                playlist_items_str,
+                indirilecek_sayi,
+                progress_guncelle,
+            )
+
+            playlist_cancel["flag"] = False
+            root.after(
+                0,
+                lambda: (
+                    playlist_buton.config(state="normal"),
+                    playlist_iptal_buton.config(state="disabled"),
+                    genel_durum_lbl.config(text=f"Playlist işlemi tamamlandı. Klasör: {klasor}"),
+                ),
+            )
+
+        threading.Thread(target=thread_isleri, daemon=True).start()
+
+    def playlist_indir():
+        url = playlist_var.get().strip()
+        if not url:
+            messagebox.showwarning("Uyarı", "Playlist URL giriniz.")
+            return
+
+        sadece_ses = format_var.get() == "mp3"
+        kalite = quality_var.get()
+        klasor = klasor_var.get().strip()
+
+        ayarlari_kaydet(format_var.get(), kalite, klasor, tema_var.get())
+
+        try:
+            info_opts = {
+                "extract_flat": True,
+                "skip_download": True,
+                "quiet": True,
+            }
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+            entries = info.get("entries", [])
+            parca_sayisi = len(entries) if entries else 0
+        except Exception as e:
+            if LOG_CALLBACK:
+                LOG_CALLBACK(f"Playlist bilgisi alınamadı: {e}")
+            messagebox.showerror("Hata", f"Playlist bilgisi alınamadı:\n{e}")
+            return
+
+        if parca_sayisi <= 0:
+            messagebox.showwarning("Uyarı", "Playlist içinde indirilebilir parça bulunamadı.")
+            return
+
+        # Playlist seçim penceresi (ana pencerenin %80'i kadar)
+        secim_penceresi = tk.Toplevel(root)
+        secim_penceresi.title("Playlist Parça Seçimi")
+
+        root.update_idletasks()
+        ana_w = root.winfo_width() or 1000
+        ana_h = root.winfo_height() or 700
+        w = int(ana_w * 0.8)
+        h = int(ana_h * 0.8)
+        secim_penceresi.geometry(f"{w}x{h}+80+60")
+
+        secim_penceresi.grab_set()
+        secim_penceresi.configure(bg=root["bg"])
+
+        ust_lbl = ttk.Label(
+            secim_penceresi,
+            text=(
+                f"Toplam {parca_sayisi} parça bulundu. "
+                f"İndirmek istediğiniz parçaları tik ile seçebilirsiniz.\n"
+                f"Hiç seçim yapmazsanız 'Seçili parçaları indir' tümünü indirir."
+            ),
+        )
+        ust_lbl.pack(pady=5, fill="x")
+
+        ust_controls = ttk.Frame(secim_penceresi)
+        ust_controls.pack(fill="x", padx=5, pady=(0, 5))
+
+        hepsini_sec_var = tk.BooleanVar(value=False)
+        secim_sayisi_lbl = ttk.Label(ust_controls, text="Seçilen: 0")
+        secim_sayisi_lbl.pack(side="right")
+
+        # Filtre kutusu
+        ttk.Label(ust_controls, text="Filtre:").pack(side="left", padx=(0, 3))
+        filtre_var = tk.StringVar()
+        filtre_entry = ttk.Entry(ust_controls, textvariable=filtre_var, width=30)
+        filtre_entry.pack(side="left", padx=(0, 5))
+
+        # Scroll alanı
+        canvas = tk.Canvas(secim_penceresi, bg=root["bg"], highlightthickness=0)
+        canvas_frame = ttk.Frame(canvas)
+        scrollbar = ttk.Scrollbar(secim_penceresi, orient="vertical", command=canvas.yview)
+
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(5, 0), pady=5)
+        scrollbar.pack(side="right", fill="y", padx=(0, 5), pady=5)
+
+        canvas.create_window((0, 0), window=canvas_frame, anchor="nw")
+
+        def on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        canvas_frame.bind("<Configure>", on_frame_configure)
+
+        def _on_mousewheel(event):
+            if sys.platform.startswith("win") or sys.platform == "darwin":
+                delta = -1 if event.delta > 0 else 1
+                canvas.yview_scroll(delta, "units")
+            else:
+                if event.num == 4:
+                    canvas.yview_scroll(-1, "units")
+                elif event.num == 5:
+                    canvas.yview_scroll(1, "units")
+            return "break"
+
+        if sys.platform.startswith("win") or sys.platform == "darwin":
+            for widget in (canvas, canvas_frame, secim_penceresi):
+                widget.bind("<MouseWheel>", _on_mousewheel)
+        else:
+            for widget in (canvas, canvas_frame, secim_penceresi):
+                widget.bind("<Button-4>", _on_mousewheel)
+                widget.bind("<Button-5>", _on_mousewheel)
+
+        secim_varlari = []
+        playlist_indeksleri = []
+
+        fg_label = style.lookup("TLabel", "foreground") or "white"
+        muted_fg = THEME_PRESETS.get(tema_var.get(), {}).get("muted_fg", "#9ca3af")
+
+        thumb_labels = []
+        thumb_urls = []
+        video_urls = []  # Her parça için gerçek YouTube adresi
+
+        card_list = []
+        card_search_texts = []
+
+        # Kartlı liste
+        for idx, ent in enumerate(entries, start=1):
+            baslik = ent.get("title") or ent.get("id") or f"Parça {idx}"
+            baslik_kisa = baslik[:67] + "..." if len(baslik) > 70 else baslik
+
+            kanal = ent.get("uploader") or ent.get("channel") or "-"
+            sure_saniye = ent.get("duration")
+            sure_str = "-"
+            if sure_saniye:
+                try:
+                    if isinstance(sure_saniye, (int, float)):
+                        m = int(sure_saniye) // 60
+                        s = int(sure_saniye) % 60
+                        sure_str = f"{m:d}:{s:02d}"
+                    else:
+                        sure_str = str(sure_saniye)
+                except Exception:
+                    sure_str = "-"
+
+            # Gerçek video url
+            video_url = ent.get("webpage_url")
+            if not video_url:
+                vid_id = ent.get("id")
+                if vid_id:
+                    video_url = f"https://www.youtube.com/watch?v={vid_id}"
+            video_urls.append(video_url)
+
+            card = ttk.Frame(canvas_frame, padding=6)
+            card.pack(fill="x", pady=3)
+            card.columnconfigure(1, weight=1)
+
+            thumb_lbl = tk.Label(
+                card,
+                bg=root["bg"],
+                fg=fg_label,
+                text="TH",
+                justify="center",
+                cursor="hand2" if video_url else "arrow",
+            )
+            thumb_lbl.grid(row=0, column=0, rowspan=2, sticky="nsw", padx=(0, 10))
+
+            baslik_lbl = ttk.Label(
+                card,
+                text=f"{idx:03d} - {baslik_kisa}",
+                font=("Segoe UI", 11, "bold"),
+                anchor="w",
+                cursor="hand2" if video_url else "arrow",
+            )
+            baslik_lbl.grid(row=0, column=1, sticky="w")
+
+            alt_lbl = ttk.Label(
+                card,
+                text=f"Kanal: {kanal}    Süre: {sure_str}",
+                font=("Segoe UI", 10),
+                foreground=muted_fg,
+                anchor="w",
+            )
+            alt_lbl.grid(row=1, column=1, sticky="w")
+
+            v = tk.BooleanVar(value=False)
+            cb = ttk.Checkbutton(card, text="Seç", variable=v)
+            cb.grid(row=0, column=2, rowspan=2, sticky="ne", padx=(10, 0))
+
+            secim_varlari.append(v)
+            playlist_indeksleri.append(idx)
+
+            # Thumbnail URL seç
+            thumb_url = None
+            thumbs = ent.get("thumbnails")
+            if isinstance(thumbs, list) and thumbs:
+                try:
+                    smallest = min(thumbs, key=lambda t: t.get("width", 999999) or 999999)
+                    thumb_url = smallest.get("url")
+                except Exception:
+                    thumb_url = thumbs[0].get("url")
+            if not thumb_url:
+                thumb_url = ent.get("thumbnail")
+
+            thumb_labels.append(thumb_lbl)
+            thumb_urls.append(thumb_url)
+
+            card_list.append(card)
+            card_search_texts.append(f"{baslik} {kanal}".lower())
+
+            # Thumbnail / başlık tıklayınca oynat
+            def make_play_callback(url_play):
+                def _play(event=None):
+                    if url_play:
+                        webbrowser.open(url_play)
+                return _play
+
+            play_cb = make_play_callback(video_url)
+            thumb_lbl.bind("<Button-1>", play_cb)
+            baslik_lbl.bind("<Button-1>", play_cb)
+
+        def uygula_filtre(*_):
+            text = filtre_var.get().strip().lower()
+            for card, stxt in zip(card_list, card_search_texts):
+                card.pack_forget()
+                if (not text) or (text in stxt):
+                    card.pack(fill="x", pady=3)
+            canvas.yview_moveto(0.0)
+
+        filtre_var.trace_add("write", uygula_filtre)
+
+        def guncelle_secim_sayisi():
+            adet = sum(1 for v in secim_varlari if v.get())
+            secim_sayisi_lbl.config(text=f"Seçilen: {adet}")
+
+        def tik_degisti(*_):
+            guncelle_secim_sayisi()
+            hepsini_sec_var.set(all(v.get() for v in secim_varlari))
+
+        for v in secim_varlari:
+            v.trace_add("write", tik_degisti)
+
+        def hepsini_sec_degisti():
+            hedef = hepsini_sec_var.get()
+            for v in secim_varlari:
+                v.set(hedef)
+            guncelle_secim_sayisi()
+
+        ttk.Checkbutton(
+            ust_controls,
+            text="Hepsini Seç",
+            variable=hepsini_sec_var,
+            command=hepsini_sec_degisti,
+        ).pack(side="left")
+
+        # Thumbnail yükleyici (en hızlı mod, ilk 40 parça)
+        def thumbnail_loader():
+            if not PIL_AVAILABLE:
+                return
+            max_thumbs = min(len(thumb_urls), 40)
+            for i in range(max_thumbs):
+                url_img = thumb_urls[i]
+                lbl = thumb_labels[i]
+                if not url_img:
+                    continue
+                try:
+                    with urlopen(url_img) as resp:
+                        data = resp.read()
+                    img = Image.open(BytesIO(data))
+                    img.thumbnail((160, 90))
+                    img_tk = ImageTk.PhotoImage(img)
+                except Exception as e_img:
+                    if LOG_CALLBACK:
+                        LOG_CALLBACK(f"Thumbnail alınamadı: {e_img}")
+                    continue
+
+                def updater(label=lbl, img_ref=img_tk):
+                    label.config(image=img_ref, text="")
+                    label.image = img_ref
+
+                root.after(0, updater)
+
+        threading.Thread(target=thumbnail_loader, daemon=True).start()
+
+        # Alt butonlar
+        buton_cerceve = ttk.Frame(secim_penceresi)
+        buton_cerceve.pack(pady=10, padx=10, fill="x")
+
+        def secili_indir():
+            secili = [str(playlist_indeksleri[i]) for i, v in enumerate(secim_varlari) if v.get()]
+            if secili:
+                playlist_items_str = ",".join(secili)
+                indirilecek_sayi = len(secili)
+            else:
+                playlist_items_str = None
+                indirilecek_sayi = parca_sayisi
+
+            secim_penceresi.destroy()
+            playlist_indirme_baslat(
+                url,
+                sadece_ses,
+                kalite,
+                klasor,
+                playlist_items_str,
+                parca_sayisi,
+                indirilecek_sayi,
+            )
+
+        def hepsini_indir():
+            secim_penceresi.destroy()
+            playlist_indirme_baslat(
+                url,
+                sadece_ses,
+                kalite,
+                klasor,
+                None,
+                parca_sayisi,
+                parca_sayisi,
+            )
+
+        def iptal_et():
+            secim_penceresi.destroy()
+            playlist_durum_lbl.config(text="Playlist indirme iptal edildi.")
+            genel_durum_lbl.config(text="Playlist indirme iptal edildi.")
+
+        ttk.Button(buton_cerceve, text="Seçili parçaları indir", command=secili_indir).pack(fill="x", pady=(0, 5))
+        ttk.Button(buton_cerceve, text="Tüm parçaları indir", command=hepsini_indir).pack(fill="x", pady=(0, 5))
+        ttk.Button(buton_cerceve, text="İptal", command=iptal_et).pack(fill="x")
+
+    def playlist_iptal():
+        playlist_cancel["flag"] = True
+        playlist_durum_lbl.config(text="İptal isteği gönderildi...")
+        if LOG_CALLBACK:
+            LOG_CALLBACK("Playlist için iptal isteği gönderildi.")
+
+    # Playlist ana butonları
+    playlist_button_frame = ttk.Frame(sag_frame)
+    playlist_button_frame.grid(row=2, column=0, sticky="e", pady=(10, 0))
+
+    playlist_buton = ttk.Button(playlist_button_frame, text="Playlist indir", command=playlist_indir)
+    playlist_buton.grid(row=0, column=0, padx=5)
+
+    playlist_iptal_buton = ttk.Button(playlist_button_frame, text="Playlist iptal", command=playlist_iptal)
+    playlist_iptal_buton.grid(row=0, column=1, padx=5)
+    playlist_iptal_buton.config(state="disabled")
+
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    gui_calistir()
